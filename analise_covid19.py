@@ -1,235 +1,208 @@
-'''Fabiano de Lima Navarro
-
-'''
-# Instalando as bibliotecas
 import pandas as pd
-import numpy as np
-from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
-import re
-from statsmodels.tsa.seasonal import seasonal_decompose
 import matplotlib.pyplot as plt
-from pmdarima.arima import auto_arima
-#from fbprophet import Prophet
+from statsmodels.tsa.seasonal import seasonal_decompose
+from pmdarima import auto_arima
+from prophet import Prophet
+import warnings
+import streamlit as st
 
-#  importar os dados.
-#url = 'covid_19_data.csv'
-#df = pd.read_csv(url, parse_dates=['ObservationDate', 'Last Update']) # para campos data
+# Suprimir warnings específicos
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=Warning)
 
-URL = 'https://drive.google.com/file/d/1L-WHma4BIWFKJ7X9P897hqtqQU2P85UU/view?usp=drive_link'
+# URL padrão dos dados
+URL = 'https://drive.google.com/uc?export=download&id=1L-WHma4BIWFKJ7X9P897hqtqQU2P85UU'
 
-df = pd.read_csv('https://drive.google.com/uc?export=download&id='+URL.split('/')[-2], parse_dates=['ObservationDate', 'Last Update']) 
+def carrega_dados(url):
+    """Carrega dados de COVID-19 a partir de uma URL e corrige os nomes das colunas."""
+    try:
+        df = pd.read_csv(url, parse_dates=['ObservationDate', 'Last Update'])
+        df.columns = [col.lower().replace(" ", "_").replace("/", "").replace("|", "") for col in df.columns]
+    except Exception as e:
+        st.error(f"Erro ao carregar os dados: {e}")
+        return pd.DataFrame()  # Retorna um DataFrame vazio em caso de erro
+    return df
 
-#print (df) # para exibir os dados    // #print (df.dtypes) # conferir os tipos de cada coluna
+def filtra_dados_brasil(df):
+    """Filtra os dados para o Brasil e remove entradas com casos confirmados iguais a zero."""
+    if df.empty:
+        st.warning("O DataFrame está vazio. Verifique a carga dos dados.")
+        return pd.DataFrame()
+    brasil = df.loc[(df.countryregion == 'Brazil') & (df.confirmed > 0)]
+    return brasil.copy()
 
-def corrige_colunas(col_name):    # corrigir nomes das colunas não devem ter letras maiúsculas e nem caracteres especiais
-    return re.sub(r"[/| ]", "", col_name).lower()
-#print(corrige_colunas("AbcED/P ou")) # testando corrige nome colunas
+def mostrar_tabela(df):
+    """Mostra a tabela com os dados resumidos."""
+    if df.empty:
+        st.warning("Os dados estão vazios. Não é possível mostrar a tabela.")
+        return
+    st.subheader("Tabela de Dados")
+    st.write(df)
 
-df.columns = [corrige_colunas(col) for col in df.columns]
-#print (df)
+def plota_confirmados(brasil):
+    """Plota a evolução dos casos confirmados no Brasil."""
+    if brasil.empty:
+        st.warning("Os dados de Brasil estão vazios. Não é possível plotar.")
+        return
+    fig = px.line(brasil, x='observationdate', y='confirmed', 
+                  labels={'observationdate': 'Data', 'confirmed': 'Número de casos confirmados'},
+                  title='Casos confirmados no Brasil')
+    st.plotly_chart(fig)
 
-# Análises  //  Vamos primeiro selecionar apenas os dados do Brasil para investigar.
+def calcula_novos_casos(brasil):
+    """Calcula e plota o número de novos casos por dia."""
+    if brasil.empty:
+        st.warning("Os dados de Brasil estão vazios. Não é possível calcular novos casos.")
+        return
+    brasil['novoscasos'] = brasil['confirmed'].diff().fillna(0)
+    fig = px.line(brasil, x='observationdate', y='novoscasos', 
+                  title='Novos casos por dia', 
+                  labels={'observationdate': 'Data', 'novoscasos': 'Novos casos'})
+    st.plotly_chart(fig)
 
-#def pais (brasil):
-pais = df.loc[df.countryregion == 'Brazil']
-print("Brasil", pais)
+def plota_mortes(brasil):
+    """Plota o número de mortes por COVID-19 no Brasil."""
+    if brasil.empty:
+        st.warning("Os dados de Brasil estão vazios. Não é possível plotar mortes.")
+        return
+    if 'deaths' not in brasil.columns:
+        st.warning("Coluna 'deaths' não encontrada nos dados.")
+        return
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=brasil.observationdate, y=brasil.deaths, name='Mortes', mode='lines+markers',
+                             line=dict(color='red')))
+    fig.update_layout(title='Mortes por COVID-19 no Brasil', xaxis_title='Data', yaxis_title='Número de mortes')
+    st.plotly_chart(fig)
 
-brasil = df.loc[(df.countryregion == 'Brazil') & (df.confirmed > 0)]
-# print ("Confirmados no Brasil", brasil)
+def decompoe_serie(novoscasos, confirmados):
+    """Decompõe e plota as séries temporais de novos casos e casos confirmados."""
+    if novoscasos.empty or confirmados.empty:
+        st.warning("Os dados estão vazios. Não é possível decompor a série.")
+        return
 
-#casos confirmados   // Grafico da evolução de casos confirmados
+    if not isinstance(novoscasos.index, pd.DatetimeIndex):
+        novoscasos.index = pd.to_datetime(novoscasos.index)
+    if not isinstance(confirmados.index, pd.DatetimeIndex):
+        confirmados.index = pd.to_datetime(confirmados.index)
 
-confirmado = px.line(brasil, 'observationdate', 'confirmed', 
-        labels={'observationdate':'Data', 'confirmed':'Número de casos confirmados'},
-       title='Casos confirmados no Brasil')
-confirmado.show()
-# novos casos por dia  //  Vamos implementar uma função para fazer a contagem de novos casos
-brasil['novoscasos'] = list(map(
-    lambda x: 0 if (x==0) else brasil['confirmed'].iloc[x] - brasil['confirmed'].iloc[x-1],
-    np.arange(brasil.shape[0])
-))
+    try:
+        res_novoscasos = seasonal_decompose(novoscasos, period=7)
+        res_confirmados = seasonal_decompose(confirmados, period=7)
+    except Exception as e:
+        st.error(f"Erro na decomposição da série: {e}")
+        return
 
-print("casos Brasil", brasil)
+    fig, axs = plt.subplots(4, 1, figsize=(10, 8))
+    axs[0].plot(res_novoscasos.observed)
+    axs[0].set_title('Novos Casos - Observado')
+    axs[1].plot(res_novoscasos.trend)
+    axs[1].set_title('Novos Casos - Tendência')
+    axs[2].plot(res_novoscasos.seasonal)
+    axs[2].set_title('Novos Casos - Sazonal')
+    axs[3].scatter(novoscasos.index, res_novoscasos.resid)
+    axs[3].axhline(0, linestyle='dashed', c='red')
+    axs[3].set_title('Novos Casos - Resíduo')
+    plt.tight_layout()
+    st.pyplot(fig)
 
-# Visualizando
-px_brasil = px.line(brasil, x='observationdate', y='novoscasos', title='Novos casos por dia',
-       labels={'observationdate': 'Data', 'novoscasos': 'Novos casos'})
-px_brasil.show()
+    fig, axs = plt.subplots(4, 1, figsize=(10, 8))
+    axs[0].plot(res_confirmados.observed)
+    axs[0].set_title('Casos Confirmados - Observado')
+    axs[1].plot(res_confirmados.trend)
+    axs[1].set_title('Casos Confirmados - Tendência')
+    axs[2].plot(res_confirmados.seasonal)
+    axs[2].set_title('Casos Confirmados - Sazonal')
+    axs[3].scatter(confirmados.index, res_confirmados.resid)
+    axs[3].axhline(0, linestyle='dashed', c='red')
+    axs[3].set_title('Casos Confirmados - Resíduo')
+    plt.tight_layout()
+    st.pyplot(fig)
 
-# Calculando as  Mortes no periodo
+def previsao_arima(confirmados):
+    """Cria e plota previsões usando o modelo ARIMA."""
+    if confirmados.empty:
+        st.warning("Dados para ARIMA estão vazios. Verifique os dados de entrada.")
+        return
 
-fig = go.Figure()
+    if not isinstance(confirmados.index, pd.DatetimeIndex):
+        confirmados.index = pd.to_datetime(confirmados.index)
 
-fig.add_trace(
-    go.Scatter(x=brasil.observationdate, y=brasil.deaths, name='Mortes', mode='lines+markers',
-              line=dict(color='red'))
-)
-#Edita o layout
-fig.update_layout(title='Mortes por COVID-19 no Brasil',
-                   xaxis_title='Data',
-                   yaxis_title='Número de mortes')
-fig.show()
+    modelo = auto_arima(confirmados, seasonal=True, m=7, trace=True, error_action='ignore', suppress_warnings=True)
 
-# Taxa Crescimento // Vamos calcular a taxa de crescimento do COVID desde o primeiro caso.
+    previsao_in_sample = modelo.predict_in_sample()
 
-def taxa_crescimento(data, variable, data_inicio=None, data_fim=None):
-    # Se data_inicio for None, define como a primeira data disponível no dataset
-    if data_inicio == None:
-        data_inicio = data.observationdate.loc[data[variable] > 0].min()
-    else:
-        data_inicio = pd.to_datetime(data_inicio)
-    if data_fim == None:
-        data_fim = data.observationdate.iloc[-1]
-    else:
-        data_fim = pd.to_datetime(data_fim)
+    forecast_periods = 15
+    future_dates = pd.date_range(start=confirmados.index[-1] + pd.Timedelta(days=1), periods=forecast_periods)
+    forecast = modelo.predict(n_periods=forecast_periods)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=confirmados.index, y=confirmados, name='Observado'))
+    fig.add_trace(go.Scatter(x=confirmados.index, y=previsao_in_sample, name='Predito', line=dict(dash='dash')))
+    fig.add_trace(go.Scatter(x=future_dates, y=forecast, name='Previsão', line=dict(dash='dash')))
+    fig.update_layout(title='Previsão ARIMA dos Casos Confirmados', xaxis_title='Data', yaxis_title='Número de casos confirmados')
+    st.plotly_chart(fig)
+
+def previsao_prophet(brasil):
+    """Cria e plota previsões usando o modelo Prophet."""
+    if brasil.empty:
+        st.warning("Dados para Prophet estão vazios. Verifique os dados de entrada.")
+        return
+
+    if 'observationdate' not in brasil.columns or 'confirmed' not in brasil.columns:
+        st.warning("Colunas necessárias para Prophet não encontradas.")
+        return
+
+    df_prophet = brasil[['observationdate', 'confirmed']].rename(columns={'observationdate': 'ds', 'confirmed': 'y'})
+    model = Prophet(yearly_seasonality=True, weekly_seasonality=True, daily_seasonality=False)
+    model.fit(df_prophet)
+    future = model.make_future_dataframe(periods=30)
+    forecast = model.predict(future)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_prophet['ds'], y=df_prophet['y'], mode='lines', name='Observado'))
+    fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='Previsão'))
+    fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_lower'], mode='lines', name='Limite Inferior', line=dict(dash='dash')))
+    fig.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_upper'], mode='lines', name='Limite Superior', line=dict(dash='dash')))
+    fig.update_layout(title='Previsão Prophet dos Casos Confirmados', xaxis_title='Data', yaxis_title='Número de casos confirmados')
+    st.plotly_chart(fig)
+
+def main():
+    """Função principal para executar o aplicativo Streamlit."""
+    st.title("Análise de Dados de COVID-19")
+
+    # Carregar dados
+    df = carrega_dados(URL)
+    brasil = filtra_dados_brasil(df)
     
-    # Define os valores de presente e passado
-    passado = data.loc[data.observationdate == data_inicio, variable].values[0]
-    presente = data.loc[data.observationdate == data_fim, variable].values[0]
-    
-    # Define o número de pontos no tempo q vamos avaliar
-    n = (data_fim - data_inicio).days
-    
-    # Calcula a taxa
-    taxa = (presente/passado)**(1/n) - 1
-    
-    return taxa*100
+    menu = st.sidebar.radio("Escolha uma opção", ("Visualização de Dados", "Análise de Séries Temporais"))
 
-cresc_medio = taxa_crescimento(brasil, 'confirmed')
+    if menu == "Visualização de Dados":
+        st.sidebar.subheader("Visualização de Dados")
+        visualizacao = st.sidebar.radio("Escolha a visualização", ["Tabela", "Casos Confirmados", "Novos Casos", "Mortes"])
 
-print(f"O crescimento médio do COVID no Brasil no período avaliado foi de {cresc_medio.round(2)}%.")
+        if visualizacao == "Tabela":
+            mostrar_tabela(brasil)
+        elif visualizacao == "Casos Confirmados":
+            plota_confirmados(brasil)
+        elif visualizacao == "Novos Casos":
+            calcula_novos_casos(brasil)
+        elif visualizacao == "Mortes":
+            plota_mortes(brasil)
 
-# Agora, vamos observar o comportamento da taxa de crescimento no tempo. Para isso, vamos definir uma função para calcular a taxa de crescimento diária.
+    elif menu == "Análise de Séries Temporais":
+        st.sidebar.subheader("Análise de Séries Temporais")
+        analise = st.sidebar.radio("Escolha a análise", ["Decomposição", "Previsão ARIMA", "Previsão Prophet"])
 
-def taxa_crescimento_diaria(data, variable, data_inicio=None):
-    if data_inicio == None:
-        data_inicio = data.observationdate.loc[data[variable] > 0].min()
-    else:
-        data_inicio = pd.to_datetime(data_inicio)
-        
-    data_fim = data.observationdate.max()
-    n = (data_fim - data_inicio).days
-    taxas = list(map(
-        lambda x: (data[variable].iloc[x] - data[variable].iloc[x-1]) / data[variable].iloc[x-1],
-        range(1,n+1)
-    ))
-    return np.array(taxas)*100
-tx_dia = taxa_crescimento_diaria(brasil, 'confirmed')
-#print(tx_dia)
+        if analise == "Decomposição":
+            if 'novoscasos' not in brasil.columns:
+                brasil['novoscasos'] = brasil['confirmed'].diff().fillna(0)
+            decompoe_serie(brasil['novoscasos'], brasil['confirmed'])
+        elif analise == "Previsão ARIMA":
+            previsao_arima(brasil['confirmed'])
+        elif analise == "Previsão Prophet":
+            previsao_prophet(brasil)
 
-primeiro_dia = brasil.observationdate.loc[brasil.confirmed > 0].min()
-primeiro = px.line(x=pd.date_range(primeiro_dia, brasil.observationdate.max())[1:],
-        y=tx_dia, title='Taxa de crescimento de casos confirmados no Brasil',
-       labels={'y':'Taxa de crescimento', 'x':'Data'})
-
-cresc_dia = taxa_crescimento_diaria(brasil, 'confirmed')
-
-primeiro.show()
-
-#Predições
-#Vamos construir um modelo de séries temporais para prever os novos casos. Antes analisemos a série temporal.
-
-
-novoscasos = brasil.novoscasos
-novoscasos.index = brasil.observationdate
-
-res = seasonal_decompose(novoscasos)
-
-fig, (ax1,ax2,ax3, ax4) = plt.subplots(4, 1,figsize=(10,8))
-ax1.plot(res.observed)
-ax2.plot(res.trend)
-ax3.plot(res.seasonal)
-ax4.scatter(novoscasos.index, res.resid)
-ax4.axhline(0, linestyle='dashed', c='red')
-plt.show()
-
-#Decompondo a série de confirmados
-confirmados = brasil.confirmed
-confirmados.index = brasil.observationdate
-res2 = seasonal_decompose(confirmados)
-
-fig, (ax1,ax2,ax3, ax4) = plt.subplots(4, 1,figsize=(10,8))
-title="série de confirmados no Brasil"
-ax1.plot(res2.observed)
-ax2.plot(res2.trend)
-ax3.plot(res2.seasonal)
-ax4.scatter(confirmados.index, res2.resid)
-ax4.axhline(0, linestyle='dashed', c='red')
-plt.show()
-
-# Predizendo o número de casos confirmados com um AUTO-ARIMA  // !pip install pmdarima
-# from pmdarima.arima import auto_arima
-modelo = auto_arima(confirmados)
-pd.date_range('2020-05-01', '2020-05-19')
-fig = go.Figure(go.Scatter(
-    x=confirmados.index, y=confirmados, name='Observed'
-))
-
-fig.add_trace(go.Scatter(x=confirmados.index, y = modelo.predict_in_sample(), name='Predicted'))
-
-fig.add_trace(go.Scatter(x=pd.date_range('2020-05-20', '2020-06-05'), y=modelo.predict(15), name='Forecast'))
-
-fig.update_layout(title='Previsão de casos confirmados para os próximos 15 dias',
-                 yaxis_title='Casos confirmados', xaxis_title='Data')
-fig.show()
-'''
-###########################################
-# Modelo de crescimento //iremos usar fbprophet  /// !conda install -c conda-forge fbprophet -y
-
-# from fbprophet import Prophet
-!conda install -c conda-forge fbprophet -y
-# preparando os dados
-train = confirmados.reset_index()[:-5]
-test = confirmados.reset_index()[-5:]
-
-# renomeia colunas
-train.rename(columns={"observationdate":"ds","confirmed":"y"},inplace=True)
-test.rename(columns={"observationdate":"ds","confirmed":"y"},inplace=True)
-test = test.set_index("ds")
-test = test['y']
-
-profeta = Prophet(growth="logistic", changepoints=['2020-03-21', '2020-03-30', '2020-04-25', '2020-05-03', '2020-05-10'])
-
-#pop = 1000000
-pop = 211463256 #https://www.ibge.gov.br/apps/populacao/projecao/box_popclock.php
-train['cap'] = pop
-
-# Treina o modelo
-profeta.fit(train)
-
-# Construindo previsões para o futuro
-future_dates = profeta.make_future_dataframe(periods=200)
-future_dates['cap'] = pop
-forecast =  profeta.predict(future_dates)
-
-fig = go.Figure()
-
-fig.add_trace(go.Scatter(x=forecast.ds, y=forecast.yhat, name='Predição'))
-fig.add_trace(go.Scatter(x=test.index, y=test, name='Observados - Teste'))
-fig.add_trace(go.Scatter(x=train.ds, y=train.y, name='Observados - Treino'))
-fig.update_layout(title='Predições de casos confirmados no Brasil')
-fig.show()
-
-'''
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+if __name__ == "__main__":
+    main()
