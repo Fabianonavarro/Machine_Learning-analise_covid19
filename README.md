@@ -47,3 +47,6 @@ Statsmodels 📈
 Pmdarima 📉
 Prophet 🧙
 Streamlit 🌐
+
+para rodar
+streamlit run analise_covid19.py
