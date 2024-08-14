@@ -1,0 +1,1 @@
+streamlit run analise_covid19.py
