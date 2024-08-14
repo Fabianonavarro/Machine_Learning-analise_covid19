@@ -48,5 +48,6 @@ Pmdarima 📉
 Prophet 🧙
 Streamlit 🌐
 
-para rodar
-streamlit run analise_covid19.py
+para rodar tem duas opções
+1 Digitar: streamlit run analise_covid19.py
+2 Executar: executa.bat
